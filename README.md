@@ -13,12 +13,7 @@ NetCompute is a distributed computing framework that dynamically assigns tasks t
 ## Installation and Setup
 
 ### Prerequisites
-1. **Python 3.8+** installed on your system.
-2. **Required Dependencies**:
-   - Install the dependencies using:
-   ```bash
-   pip install -r requirements.txt
-   ```
+**Python 3.8+** installed on your system.
 
 ### Steps to Clone and Run
 1. **Clone the Repository**
@@ -26,7 +21,10 @@ NetCompute is a distributed computing framework that dynamically assigns tasks t
    ```bash
    git clone https://github.com/aayushshah1/NetCompute
    cd NetCompute
-   git checkout Distributed-Training  # Switch to the correct branch
+   code .  # To open folder in code editor
+   
+   git checkout branch-name  # Switch to the your branch
+   pip install -r requirements.txt  # In terminal
    ```
 
 2. **Set Up Master Node**
@@ -46,8 +44,7 @@ NetCompute is a distributed computing framework that dynamically assigns tasks t
 3. **Start the Master Node**
 
    ```bash
-   python master.py  # For training
-   python master_test.py  # For test mode (predictions)
+   python master.py  # For training enter 1 / for test enter 2
    ```
 
 4. **Start a Worker Node**
@@ -74,7 +71,7 @@ NetCompute is a distributed computing framework that dynamically assigns tasks t
 * Run the test master node:
 
    ```bash
-   python master_test.py
+   python master.py
    ```
 
 * Workers will process the test dataset and generate predictions.
@@ -84,8 +81,8 @@ NetCompute is a distributed computing framework that dynamically assigns tasks t
 Before retraining, delete:
 
 ```bash
-rm trained_model.pkl
-rm data/submission_test.csv
+rm Model/trained_model.pkl
+rm Data/submission_test.csv
 ```
 
 Then, restart the training process.
@@ -100,7 +97,7 @@ Then, restart the training process.
    * If predictions are all `-1`, ensure the model was trained successfully before running `master_test.py`.
 
 ## Contributions
-Feel free to contribute to NetCompute! Fork the repository, create a new branch, and submit a pull request.
+Fork the repository, create a new branch, and submit a pull request.
 
 ## License
 This project is licensed under the MIT License.
