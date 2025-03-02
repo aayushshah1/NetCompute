@@ -1,4 +1,5 @@
 import pandas as pd
+import os
 
 def preprocess_data(input_file, output_file):
     """Preprocess Titanic dataset and save cleaned version."""
@@ -21,4 +22,4 @@ def preprocess_data(input_file, output_file):
     print(f"✅ Preprocessed data saved to {output_file}")
 
 if __name__ == "__main__":
-    preprocess_data("test.csv", "processed_test.csv")
+    preprocess_data(os.path.join("Data", "test.csv"), os.path.join("Data", "processed_test.csv"))

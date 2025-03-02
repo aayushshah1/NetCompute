@@ -11,13 +11,13 @@ batch_y = []
 BATCH_SIZE = 5  # ✅ Mini-batch size for training
 
 # ✅ Model file to save and load
-MODEL_FILE = "trained_model.pkl"
+MODEL_FILE = os.path.join("Model", "trained_model.pkl")
 
 def train_model(task):
     """Trains the model using mini-batch updates and saves after training."""
     global batch_X, batch_y, model
 
-    time.sleep(0.1)  # ⏳ Simulate processing time
+    time.sleep(0.05)  # ⏳ Simulate processing time
 
     batch_X.append(task["data"])
     batch_y.append(task["label"])
@@ -33,6 +33,7 @@ def train_model(task):
         save_model()  # ✅ Save after training
         batch_X.clear()
         batch_y.clear()
+        # print(f"✅ Batch processed and model updated. Ready for new samples.")
 
     return {"task_id": task["task_id"], "passenger_id": task["passenger_id"], "prediction": None}  # ✅ No prediction during training
 
@@ -40,7 +41,7 @@ def predict(task):
     """Predicts using the trained model."""
     global model
 
-    time.sleep(0.1)  # ⏳ Simulate processing time
+    time.sleep(0.05)  # ⏳ Simulate processing time
 
     if not os.path.exists(MODEL_FILE):
         print(f"⚠️ Model file not found! Skipping prediction for Task ID {task['task_id']}")
