@@ -1,0 +1,6 @@
+pyzmq
+psutil
+pandas
+numpy
+scikit-learn
+matplotlib
