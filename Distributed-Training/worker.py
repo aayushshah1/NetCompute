@@ -10,7 +10,7 @@ from ai_module import train_model, predict  # ✅ Use single ai_module.py
 
 
 # Master Node Configuration
-MASTER_IP = "192.168.29.14"  # Change this if running on multiple machines
+MASTER_IP = "10.125.46.131"  # Change this if running on multiple machines
 TASK_PORT = "5555"
 RESULT_PORT = "5556"
 HEARTBEAT_PORT = "5557"
@@ -52,7 +52,7 @@ class WorkerNode:
                 "tasks_processed": self.tasks_processed
             }
             self.heartbeat_socket.send_string(json.dumps(usage))
-            time.sleep(0.01)
+            # time.sleep(0.01)
 
     
     
