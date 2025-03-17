@@ -1,17 +1,29 @@
-# NetCompute - Distributed Computing Framework
+# NetCompute - A Distributed Computing Framework
 
-NetCompute is a distributed computing framework that dynamically assigns tasks to connected nodes, utilizing their computational power to execute resource-intensive workloads efficiently.
+## **1️⃣ Problem Statement**
+Modern AI and data workloads require vast computing power, but most organizations have **idle PCs**. Cloud computing is **expensive**, and setting up distributed systems is **complex**. **NetCompute** enables organizations to use existing machines for distributed computing.
 
-## Features
-- Distributed Task Execution
-- Dynamic Worker Assignment
-- Machine Learning Model Training & Prediction
-- Supports Multiple Workers Across Different Machines
+### **Key Challenges:**
+- **Idle PCs:** Wasted potential in offices, labs, and research centers.
+- **Cloud Costs:** Expensive and scales poorly for long-term AI workloads.
+- **Complexity:** Traditional distributed systems require admin access & setup.
+
+## **2️⃣ Solution - NetCompute**
+NetCompute is a **lightweight, scalable distributed computing system** that connects multiple PCs to share workloads. It works by:
+✅ Running a **Master Server** that distributes tasks and collects results.  
+✅ Workers connecting to the Master via **WebSockets** and executing computations.  
+✅ Supporting **multiple workers dynamically**, ensuring efficient load balancing.  
+✅ Machine Learning Model Training & Prediction to distribute AI workloads efficiently.
+
+## **3️⃣ Implementation Perspective**
+Inspired by **BIONIC (UC Berkeley)** cause, NetCompute applies distributed computing to everyday hardware. It can:
+🔹 Distribute ML workloads in AI labs.  
+🔹 Accelerate simulations in research.  
+🔹 Provide a scalable alternative to cloud-based computing.  
 
 ---
 
-## Installation and Setup
-
+## **🚀 Getting Started**
 ### Prerequisites
 **Python 3.8+** installed on your system.
 
@@ -23,7 +35,7 @@ NetCompute is a distributed computing framework that dynamically assigns tasks t
    cd NetCompute
    code .  # To open folder in code editor
    
-   git checkout branch-name  # Switch to the your branch
+   git checkout branch-name  # (optional) Switch to the your branch
    pip install -r requirements.txt  # In terminal
    ```
 
