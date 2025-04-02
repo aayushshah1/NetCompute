@@ -10,7 +10,7 @@ from ai_module import train_model, predict  # ✅ Use single ai_module.py
 
 
 # Master Node Configuration
-MASTER_IP = "10.125.34.193"  # Change this if running on multiple machines
+MASTER_IP = "192.168.29.117"  # Change this if running on multiple machines
 TASK_PORT = "5555"
 RESULT_PORT = "5556"
 HEARTBEAT_PORT = "5557"
@@ -41,18 +41,47 @@ class WorkerNode:
         print(f"🚀 Worker {worker_id} started and ready to receive tasks.")
         print("📝 Press 'q' and Enter at any time to quit gracefully")
 
+    # def send_heartbeat(self):
+    #     """Send heartbeat with system resource stats."""
+    #     while self.running:
+    #         usage = {
+    #             "worker_id": worker_id,
+    #             "cpu": psutil.cpu_percent(),
+    #             "memory": psutil.virtual_memory().percent,
+    #             "last_seen": time.time(),
+    #             "tasks_processed": self.tasks_processed
+    #         }
+    #         self.heartbeat_socket.send_string(json.dumps(usage))
+    #         # time.sleep(0.01)
+    
+   
     def send_heartbeat(self):
         """Send heartbeat with system resource stats."""
+        start_time = time.time()
+        
         while self.running:
-            usage = {
+            # Gather system resource stats
+            cpu_usage = psutil.cpu_percent(interval=0.5)  # Use shorter interval
+            memory_usage = psutil.virtual_memory().percent
+            
+            # Calculate processing rate
+            elapsed_time = time.time() - start_time
+            processing_rate = self.tasks_processed / max(1, elapsed_time)  # tasks per second
+            
+            # Send heartbeat message
+            heartbeat_message = {
                 "worker_id": worker_id,
-                "cpu": psutil.cpu_percent(),
-                "memory": psutil.virtual_memory().percent,
+                "cpu": cpu_usage,
+                "memory": memory_usage,
+                "tasks_processed": self.tasks_processed,
                 "last_seen": time.time(),
-                "tasks_processed": self.tasks_processed
+                "current_task": self.current_task if hasattr(self, 'current_task') else None,
+                "processing_rate": processing_rate,
+                "uptime": elapsed_time
             }
-            self.heartbeat_socket.send_string(json.dumps(usage))
-            # time.sleep(0.01)
+            
+            self.heartbeat_socket.send_string(json.dumps(heartbeat_message))
+            time.sleep(1)  # Send heartbeat every second
 
     
     

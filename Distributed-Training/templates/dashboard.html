@@ -1,0 +1,681 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Distributed Training Dashboard</title>
+    <!-- Bootstrap 5 CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <!-- FontAwesome for Icons -->
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <!-- Chart.js for visualizations -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <!-- Socket.IO for real-time updates -->
+    <script src="https://cdn.jsdelivr.net/npm/socket.io/client-dist/socket.io.min.js"></script>
+    <!-- Custom CSS -->
+    <style>
+        body {
+            background-color: #f8f9fa;
+            color: #212529;
+            transition: all 0.3s;
+        }
+        body.dark-mode {
+            background-color: #212529;
+            color: #f8f9fa;
+        }
+        .card {
+            background-color: #ffffff;
+            border: 1px solid #dee2e6;
+            transition: all 0.3s;
+            box-shadow: 0 0.125rem 0.25rem rgba(0, 0, 0, 0.075);
+            margin-bottom: 1rem;
+        }
+        body.dark-mode .card {
+            background-color: #343a40;
+            border-color: #495057;
+            color: #f8f9fa;
+        }
+        .card-header {
+            background-color: #e9ecef;
+            color: #212529;
+            transition: all 0.3s;
+            font-weight: 600;
+        }
+        body.dark-mode .card-header {
+            background-color: #495057;
+            color: #f8f9fa;
+        }
+        .btn-toggle {
+            background-color: #e9ecef;
+            color: #212529;
+            transition: all 0.3s;
+        }
+        body.dark-mode .btn-toggle {
+            background-color: #495057;
+            color: #f8f9fa;
+        }
+        .btn-toggle:hover {
+            background-color: #ced4da;
+        }
+        body.dark-mode .btn-toggle:hover {
+            background-color: #6c757d;
+        }
+        .worker-card {
+            transition: transform 0.2s;
+        }
+        .worker-card:hover {
+            transform: translateY(-3px);
+        }
+        .comparison-chart-container, .resource-chart-container {
+            height: 300px;
+            margin-bottom: 20px;
+        }
+        .progress {
+            height: 10px;
+        }
+        #connectionStatus {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            z-index: 1000;
+        }
+        .worker-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+            gap: 15px;
+        }
+    </style>
+</head>
+<body>
+    <!-- Connection Status -->
+    <div id="connectionStatus" class="toast align-items-center text-white bg-danger" role="alert" aria-live="assertive" aria-atomic="true">
+        <div class="d-flex">
+            <div class="toast-body">
+                <i class="fas fa-exclamation-triangle me-2"></i> Connection lost. Reconnecting...
+            </div>
+            <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast" aria-label="Close"></button>
+        </div>
+    </div>
+
+    <div class="container-fluid py-3">
+        <!-- Header -->
+        <div class="d-flex justify-content-between align-items-center mb-4">
+            <h1 class="h3">
+                <i class="fas fa-network-wired me-2"></i> Distributed Training Dashboard
+                <span id="liveIndicator" class="badge bg-success me-2">
+                    <i class="fas fa-signal me-1"></i> LIVE
+                </span>
+            </h1>
+            <div>
+                <button id="toggleMode" class="btn btn-toggle">
+                    <i class="fas fa-moon"></i> Dark Mode
+                </button>
+            </div>
+        </div>
+
+        <!-- System Overview -->
+        <div class="row g-3 mb-4">
+            <div class="col-md-3">
+                <div class="card h-100">
+                    <div class="card-header">
+                        <i class="fas fa-server me-2"></i> Active Workers
+                    </div>
+                    <div class="card-body d-flex align-items-center justify-content-center">
+                        <div class="text-center">
+                            <h2 id="activeNodes" class="display-4 mb-0">0</h2>
+                            <p class="text-muted mb-0">Connected Nodes</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="card h-100">
+                    <div class="card-header">
+                        <i class="fas fa-microchip me-2"></i> CPU Usage
+                    </div>
+                    <div class="card-body">
+                        <h2 id="aggregateCPU" class="display-4 mb-3 text-center">0%</h2>
+                        <div class="progress mb-2">
+                            <div id="cpuProgressBar" class="progress-bar bg-primary" role="progressbar" style="width: 0%" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100"></div>
+                        </div>
+                        <p class="text-muted text-center mb-0">Average across all workers</p>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="card h-100">
+                    <div class="card-header">
+                        <i class="fas fa-memory me-2"></i> Memory Usage
+                    </div>
+                    <div class="card-body">
+                        <h2 id="aggregateMemory" class="display-4 mb-3 text-center">0%</h2>
+                        <div class="progress mb-2">
+                            <div id="memoryProgressBar" class="progress-bar bg-success" role="progressbar" style="width: 0%" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100"></div>
+                        </div>
+                        <p class="text-muted text-center mb-0">Average across all workers</p>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="card h-100">
+                    <div class="card-header">
+                        <i class="fas fa-tasks me-2"></i> Task Progress
+                    </div>
+                    <div class="card-body">
+                        <h2 id="tasksProgress" class="display-4 mb-3 text-center">0%</h2>
+                        <div class="progress mb-2">
+                            <div id="taskProgressBar" class="progress-bar bg-info" role="progressbar" style="width: 0%" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100"></div>
+                        </div>
+                        <p id="tasksRatio" class="text-muted text-center mb-0">0/0 tasks</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Performance Comparison -->
+        <div class="row mb-4">
+            <div class="col-md-6">
+                <div class="card h-100">
+                    <div class="card-header">
+                        <i class="fas fa-chart-bar me-2"></i> Single vs. Multiple Workers Performance
+                    </div>
+                    <div class="card-body">
+                        <div class="comparison-chart-container">
+                            <canvas id="timeComparisonChart"></canvas>
+                        </div>
+                        <div id="speedupMetric" class="text-center mt-2">
+                            <!-- Will be filled by JavaScript -->
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-6">
+                <div class="card h-100">
+                    <div class="card-header">
+                        <i class="fas fa-chart-area me-2"></i> System Resource Utilization
+                    </div>
+                    <div class="card-body">
+                        <div class="resource-chart-container">
+                            <canvas id="resourceChart"></canvas>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Worker Nodes -->
+        <div class="card mb-4">
+            <div class="card-header">
+                <i class="fas fa-laptop me-2"></i> Worker Nodes
+                <span class="badge bg-primary ms-2" id="workerCount">0</span>
+            </div>
+            <div class="card-body">
+                <div id="workerNodesContainer" class="worker-grid">
+                    <!-- Worker cards will be added here -->
+                    <div class="text-center py-4 text-muted">
+                        <i class="fas fa-spinner fa-spin me-2"></i> Waiting for workers to connect...
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Bootstrap 5 JS -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha3/dist/js/bootstrap.bundle.min.js"></script>
+    <!-- Custom JS -->
+    <script>
+        // Initialize variables
+        let connectionToast;
+        let resourceData = {
+            labels: [],
+            cpu: [],
+            memory: []
+        };
+        let performanceData = {
+            single: { time: 0, tasks: 0 },
+            multi: { time: 0, tasks: 0, workers: 0 }
+        };
+        let charts = {};
+        let darkMode = false;
+        let lastUpdate = Date.now();
+        let resourceHistory = [];
+
+        // Socket connection
+        // Update the socket connection:
+        // Update Socket.IO handling part:
+
+// Socket connection with better error handling
+        const socket = io.connect('http://localhost:5050', {
+            reconnection: true,
+            reconnectionAttempts: 10,
+            reconnectionDelay: 1000,
+            reconnectionDelayMax: 5000,
+            timeout: 20000,
+            transports: ['polling', 'websocket']
+        });
+
+        // Socket.IO Event Handlers
+        socket.on('connect', () => {
+            console.log('WebSocket connected! Socket ID:', socket.id);
+            document.getElementById('liveIndicator').className = 'badge bg-success me-2';
+            document.getElementById('liveIndicator').innerHTML = '<i class="fas fa-signal me-1"></i> LIVE';
+        });
+
+        socket.on('connect_error', (error) => {
+            console.error('Connection error:', error);
+            document.getElementById('liveIndicator').className = 'badge bg-danger me-2';
+            document.getElementById('liveIndicator').innerHTML = '<i class="fas fa-exclamation-triangle me-1"></i> CONNECTION ERROR';
+            connectionToast.show();
+        });
+
+        socket.on('connect_timeout', () => {
+            console.error('Connection timeout');
+            document.getElementById('liveIndicator').className = 'badge bg-danger me-2';
+            document.getElementById('liveIndicator').innerHTML = '<i class="fas fa-exclamation-triangle me-1"></i> CONNECTION TIMEOUT';
+            connectionToast.show();
+        });
+                
+        socket.on('disconnect', (reason) => {
+            console.log('WebSocket disconnected! Reason:', reason);
+            document.getElementById('liveIndicator').className = 'badge bg-danger me-2';
+            document.getElementById('liveIndicator').innerHTML = '<i class="fas fa-circle-notch fa-spin me-1"></i> OFFLINE';
+            document.querySelector('.toast-body').innerHTML = `<i class="fas fa-exclamation-triangle me-2"></i> Connection lost. Reason: ${reason}`;
+            connectionToast.show();
+        });
+
+        socket.on('error', (error) => {
+            console.error('Socket error:', error);
+            document.getElementById('liveIndicator').className = 'badge bg-danger me-2';
+            document.getElementById('liveIndicator').innerHTML = '<i class="fas fa-exclamation-triangle me-1"></i> ERROR';
+            connectionToast.show();
+        });
+
+        socket.on('update_stats', (data) => {
+            console.log('Received update_stats:', data);
+            lastUpdate = Date.now();
+            
+            try {
+                // Update dashboard components
+                updateWorkerStats(data);
+                updateResourceStats(data);
+                updateTaskProgress(data);
+                updateResourceChart(data);
+                updatePerformanceComparison(data);
+            } catch (error) {
+                console.error('Error processing update_stats:', error);
+            }
+        });
+
+        // DOM Ready
+        document.addEventListener('DOMContentLoaded', function() {
+            // Initialize Bootstrap toast
+            connectionToast = new bootstrap.Toast(document.getElementById('connectionStatus'));
+            
+            // Initialize Charts
+            initializeCharts();
+            
+            // Setup theme toggle
+            setupThemeToggle();
+        });
+
+        // Dark/Light Mode Toggle
+        function setupThemeToggle() {
+            const toggleMode = document.getElementById('toggleMode');
+            toggleMode.addEventListener('click', () => {
+                darkMode = !darkMode;
+                document.body.classList.toggle('dark-mode');
+                toggleMode.innerHTML = darkMode 
+                    ? '<i class="fas fa-sun"></i> Light Mode' 
+                    : '<i class="fas fa-moon"></i> Dark Mode';
+                updateChartsTheme();
+            });
+        }
+
+        // Initialize Charts
+        function initializeCharts() {
+            // Resource utilization chart
+            const resourceCtx = document.getElementById('resourceChart').getContext('2d');
+            charts.resourceChart = new Chart(resourceCtx, {
+                type: 'line',
+                data: {
+                    labels: [],
+                    datasets: [
+                        {
+                            label: 'CPU Usage',
+                            data: [],
+                            borderColor: 'rgba(66, 133, 244, 1)',
+                            backgroundColor: 'rgba(66, 133, 244, 0.1)',
+                            fill: true,
+                            tension: 0.4,
+                            pointRadius: 2
+                        },
+                        {
+                            label: 'Memory Usage',
+                            data: [],
+                            borderColor: 'rgba(52, 168, 83, 1)',
+                            backgroundColor: 'rgba(52, 168, 83, 0.1)',
+                            fill: true,
+                            tension: 0.4,
+                            pointRadius: 2
+                        }
+                    ]
+                },
+                options: {
+                    maintainAspectRatio: false,
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            max: 100,
+                            title: {
+                                display: true,
+                                text: 'Usage (%)'
+                            }
+                        },
+                        x: {
+                            title: {
+                                display: true,
+                                text: 'Time'
+                            }
+                        }
+                    },
+                    animations: {
+                        radius: {
+                            duration: 400,
+                            easing: 'linear'
+                        }
+                    },
+                    plugins: {
+                        tooltip: {
+                            enabled: true,
+                            mode: 'index',
+                            intersect: false
+                        },
+                        legend: {
+                            position: 'top',
+                        }
+                    }
+                }
+            });
+            
+            // Time comparison chart
+            const timeCtx = document.getElementById('timeComparisonChart').getContext('2d');
+            charts.timeComparisonChart = new Chart(timeCtx, {
+                type: 'bar',
+                data: {
+                    labels: ['Single Worker', 'Multiple Workers'],
+                    datasets: [{
+                        label: 'Processing Time (seconds)',
+                        data: [0, 0],
+                        backgroundColor: [
+                            'rgba(255, 99, 132, 0.7)',
+                            'rgba(54, 162, 235, 0.7)'
+                        ],
+                        borderColor: [
+                            'rgb(255, 99, 132)',
+                            'rgb(54, 162, 235)'
+                        ],
+                        borderWidth: 1
+                    }]
+                },
+                options: {
+                    maintainAspectRatio: false,
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            title: {
+                                display: true,
+                                text: 'Time (seconds)'
+                            }
+                        }
+                    },
+                    plugins: {
+                        tooltip: {
+                            callbacks: {
+                                afterLabel: function(context) {
+                                    const dataIndex = context.dataIndex;
+                                    if (dataIndex === 0) {
+                                        return `Tasks: ${performanceData.single.tasks}`;
+                                    } else {
+                                        return `Tasks: ${performanceData.multi.tasks}\nWorkers: ${performanceData.multi.workers}`;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        // Update charts theme based on dark/light mode
+        function updateChartsTheme() {
+            const gridColor = darkMode ? 'rgba(255, 255, 255, 0.1)' : 'rgba(0, 0, 0, 0.1)';
+            const textColor = darkMode ? '#f8f9fa' : '#212529';
+            
+            // Update all charts with new theme
+            [charts.resourceChart, charts.timeComparisonChart].forEach(chart => {
+                if (chart.options.scales.y) {
+                    chart.options.scales.y.grid.color = gridColor;
+                    chart.options.scales.y.ticks.color = textColor;
+                    if (chart.options.scales.y.title) {
+                        chart.options.scales.y.title.color = textColor;
+                    }
+                }
+                if (chart.options.scales.x) {
+                    chart.options.scales.x.grid.color = gridColor;
+                    chart.options.scales.x.ticks.color = textColor;
+                    if (chart.options.scales.x.title) {
+                        chart.options.scales.x.title.color = textColor;
+                    }
+                }
+                if (chart.options.plugins && chart.options.plugins.legend) {
+                    chart.options.plugins.legend.labels.color = textColor;
+                }
+                chart.update();
+            });
+        }
+
+        // Socket.IO Event Handlers
+        socket.on('connect', () => {
+            console.log('WebSocket connected!');
+            document.getElementById('liveIndicator').className = 'badge bg-success me-2';
+            document.getElementById('liveIndicator').innerHTML = '<i class="fas fa-signal me-1"></i> LIVE';
+        });
+        
+        socket.on('disconnect', () => {
+            console.log('WebSocket disconnected!');
+            document.getElementById('liveIndicator').className = 'badge bg-danger me-2';
+            document.getElementById('liveIndicator').innerHTML = '<i class="fas fa-circle-notch fa-spin me-1"></i> OFFLINE';
+            document.querySelector('.toast-body').innerHTML = '<i class="fas fa-exclamation-triangle me-2"></i> Connection lost. Reconnecting...';
+            connectionToast.show();
+        });
+
+        socket.on('update_stats', (data) => {
+            console.log('Received update_stats:', data);
+            lastUpdate = Date.now();
+            
+            // Update dashboard components
+            updateWorkerStats(data);
+            updateResourceStats(data);
+            updateTaskProgress(data);
+            updateResourceChart(data);
+            updatePerformanceComparison(data);
+        });
+
+        // Update Worker Statistics
+        function updateWorkerStats(data) {
+            const workers = data.workers || {};
+            const activeWorkerCount = Object.keys(workers).length;
+            
+            // Update active nodes count
+            document.getElementById('activeNodes').innerText = activeWorkerCount;
+            document.getElementById('workerCount').innerText = activeWorkerCount;
+            
+            // Update worker nodes container
+            const container = document.getElementById('workerNodesContainer');
+            
+            // Clear container if we have workers
+            if (activeWorkerCount > 0) {
+                container.innerHTML = '';
+                
+                // Add worker cards for each worker
+                Object.entries(workers).forEach(([workerId, stats]) => {
+                    const cpuPercentage = stats.cpu || 0;
+                    const memoryPercentage = stats.memory || 0;
+                    const tasksProcessed = stats.tasks_processed || 0;
+                    const processingRate = stats.processing_rate ? stats.processing_rate.toFixed(2) : "0.00";
+                    
+                    // Create worker card
+                    const workerCard = document.createElement('div');
+                    workerCard.className = 'card worker-card';
+                    workerCard.innerHTML = `
+                        <div class="card-header d-flex justify-content-between align-items-center">
+                            <span><i class="fas fa-laptop-code me-2"></i> ${workerId}</span>
+                            <span class="badge bg-success">Active</span>
+                        </div>
+                        <div class="card-body">
+                            <div class="mb-3">
+                                <div class="d-flex justify-content-between mb-1">
+                                    <span>CPU: ${cpuPercentage.toFixed(1)}%</span>
+                                </div>
+                                <div class="progress">
+                                    <div class="progress-bar bg-primary" role="progressbar" style="width: ${cpuPercentage}%" 
+                                        aria-valuenow="${cpuPercentage}" aria-valuemin="0" aria-valuemax="100"></div>
+                                </div>
+                            </div>
+                            <div class="mb-3">
+                                <div class="d-flex justify-content-between mb-1">
+                                    <span>Memory: ${memoryPercentage.toFixed(1)}%</span>
+                                </div>
+                                <div class="progress">
+                                    <div class="progress-bar bg-success" role="progressbar" style="width: ${memoryPercentage}%" 
+                                        aria-valuenow="${memoryPercentage}" aria-valuemin="0" aria-valuemax="100"></div>
+                                </div>
+                            </div>
+                            <div class="d-flex justify-content-between mt-3">
+                                <div>
+                                    <i class="fas fa-tasks me-1"></i> ${tasksProcessed} tasks
+                                </div>
+                                <div>
+                                    <i class="fas fa-tachometer-alt me-1"></i> ${processingRate} tasks/sec
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                    container.appendChild(workerCard);
+                });
+            } else {
+                container.innerHTML = `
+                    <div class="text-center py-4 text-muted">
+                        <i class="fas fa-spinner fa-spin me-2"></i> Waiting for workers to connect...
+                    </div>
+                `;
+            }
+        }
+
+        // Update Resource Statistics
+        function updateResourceStats(data) {
+            const avgCpu = data.avg_cpu !== undefined ? data.avg_cpu.toFixed(1) : "0.0";
+            const avgMemory = data.avg_memory !== undefined ? data.avg_memory.toFixed(1) : "0.0";
+            
+            document.getElementById('aggregateCPU').innerText = `${avgCpu}%`;
+            document.getElementById('cpuProgressBar').style.width = `${avgCpu}%`;
+            document.getElementById('cpuProgressBar').setAttribute('aria-valuenow', avgCpu);
+            
+            document.getElementById('aggregateMemory').innerText = `${avgMemory}%`;
+            document.getElementById('memoryProgressBar').style.width = `${avgMemory}%`;
+            document.getElementById('memoryProgressBar').setAttribute('aria-valuenow', avgMemory);
+        }
+
+        // Update Task Progress
+        function updateTaskProgress(data) {
+            const completedTasks = data.completed_tasks || 0;
+            const totalTasks = data.total_tasks || 0;
+            const progress = totalTasks > 0 ? (completedTasks / totalTasks) * 100 : 0;
+            
+            document.getElementById('tasksProgress').innerText = `${progress.toFixed(1)}%`;
+            document.getElementById('taskProgressBar').style.width = `${progress}%`;
+            document.getElementById('taskProgressBar').setAttribute('aria-valuenow', progress);
+            document.getElementById('tasksRatio').innerText = `${completedTasks}/${totalTasks} tasks`;
+        }
+
+        // Update Resource Chart
+        function updateResourceChart(data) {
+            const now = new Date().toLocaleTimeString();
+            
+            // Store resource history (limited to last 10 data points)
+            resourceHistory.push({
+                timestamp: now,
+                cpu: data.avg_cpu || 0,
+                memory: data.avg_memory || 0
+            });
+            
+            // Keep only the last 10 data points
+            if (resourceHistory.length > 10) {
+                resourceHistory.shift();
+            }
+            
+            // Update chart with resource history
+            charts.resourceChart.data.labels = resourceHistory.map(point => point.timestamp);
+            charts.resourceChart.data.datasets[0].data = resourceHistory.map(point => point.cpu);
+            charts.resourceChart.data.datasets[1].data = resourceHistory.map(point => point.memory);
+            charts.resourceChart.update();
+        }
+
+        // Update Performance Comparison
+        function updatePerformanceComparison(data) {
+            const comparison = data.performance_comparison;
+            
+            if (comparison) {
+                // Update single worker performance
+                if (comparison.single_worker && comparison.single_worker.processing_time) {
+                    performanceData.single.time = comparison.single_worker.processing_time;
+                    performanceData.single.tasks = comparison.single_worker.tasks_completed;
+                }
+                
+                // Update multiple worker performance
+                if (comparison.multi_worker && comparison.multi_worker.processing_time) {
+                    performanceData.multi.time = comparison.multi_worker.processing_time;
+                    performanceData.multi.tasks = comparison.multi_worker.tasks_completed;
+                    performanceData.multi.workers = comparison.multi_worker.worker_count;
+                }
+                
+                // Update comparison chart
+                charts.timeComparisonChart.data.datasets[0].data = [
+                    performanceData.single.time,
+                    performanceData.multi.time
+                ];
+                charts.timeComparisonChart.update();
+                
+                // Calculate and display speedup if available
+                if (performanceData.single.time > 0 && performanceData.multi.time > 0) {
+                    const speedup = (performanceData.single.time / performanceData.multi.time).toFixed(2);
+                    const efficiency = ((speedup / performanceData.multi.workers) * 100).toFixed(1);
+                    
+                    document.getElementById('speedupMetric').innerHTML = `
+                        <div class="alert alert-info">
+                            <strong>${performanceData.multi.workers}x workers</strong> achieved a 
+                            <strong>${speedup}x speedup</strong> (${efficiency}% efficiency)
+                        </div>
+                    `;
+                }
+            }
+        }
+
+        // Check connection status periodically
+        setInterval(() => {
+            const timeSinceLastUpdate = Date.now() - lastUpdate;
+            if (timeSinceLastUpdate > 5000) {  // 5 seconds without updates
+                document.getElementById('liveIndicator').className = 'badge bg-warning me-2';
+                document.getElementById('liveIndicator').innerHTML = '<i class="fas fa-exclamation-circle me-1"></i> STALE';
+                if (timeSinceLastUpdate > 10000) {  // 10 seconds without updates
+                    document.getElementById('liveIndicator').className = 'badge bg-danger me-2';
+                    document.getElementById('liveIndicator').innerHTML = '<i class="fas fa-circle-notch fa-spin me-1"></i> OFFLINE';
+                    document.querySelector('.toast-body').innerHTML = '<i class="fas fa-exclamation-triangle me-2"></i> Connection lost. Data is stale.';
+                    connectionToast.show();
+                }
+            }
+        }, 2000);
+    </script>
+</body>
+</html>
