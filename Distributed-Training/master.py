@@ -50,7 +50,7 @@ class MasterNode:
     def load_train_data(self):
         """Loads preprocessed Titanic dataset for training."""
         # df = pd.read_csv("processed_train.csv")
-        df = pd.read_csv(os.path.join("Data", "augmented_dataset.csv"))
+        df = pd.read_csv(os.path.join("Data", "processed_train.csv"))
         
         # Extract PassengerId before dropping it
         self.passenger_ids = df["PassengerId"].tolist()
@@ -127,7 +127,7 @@ class MasterNode:
                     self.task_socket.send_multipart([worker_id, b"", json.dumps(task).encode()])
                     print(f"📤 Assigned Task ID {task['task_id']} to {worker_id_str}")
             except zmq.Again:
-                time.sleep(0.1)
+                time.sleep(0)
 
     def collect_results(self):
         """Wait for all workers to send back results."""
@@ -146,7 +146,7 @@ class MasterNode:
                 self.save_results(result)
 
             except zmq.Again:
-                time.sleep(0.5)
+                time.sleep(0)
                 
                 # Print status update every 5 seconds
                 if self.completed_tasks > 0 and self.completed_tasks % 10 == 0:
