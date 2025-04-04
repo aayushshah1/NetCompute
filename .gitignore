@@ -7,10 +7,28 @@ __pycache__/
 # C extensions
 *.so
 
+# macOS system files
+.DS_Store
+.DS_Store/
+*/.DS_Store
+../.DS_Store
+
+# Ignore dataset files
+Distributed-Training/Data/.DS_Store
+Distributed-Training/Data/submission_train.csv
+
+# Ignore untracked directories
+Spam-Detection/
+Router-Dealer/.DS_Store
+Extra/
+
+
 # Distribution / packaging
+# Distributed-Training
 Push-Pull/
 ZeroMQ/
 .Python
+.vscode
 build/
 develop-eggs/
 dist/
@@ -28,6 +46,8 @@ share/python-wheels/
 .installed.cfg
 *.egg
 MANIFEST
+# Ignore model files
+Model/*.pkl
 
 # PyInstaller
 #  Usually these files are written by a python script from a template
@@ -63,6 +83,11 @@ cover/
 local_settings.py
 db.sqlite3
 db.sqlite3-journal
+
+
+#sql sessions
+*.session.sql
+
 
 # Flask stuff:
 instance/
