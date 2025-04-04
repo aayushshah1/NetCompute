@@ -1,0 +1,13 @@
+{
+  "master": {
+    "ip": "192.168.29.117",
+    "task_port": "5555",
+    "result_port": "5556",
+    "heartbeat_port": "5557"
+  },
+  "dashboard": {
+    "host": "192.168.29.117",
+    
+    "port": "5051"
+  }
+}

@@ -1,4 +1,3 @@
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -240,20 +239,13 @@
         let darkMode = false;
         let lastUpdate = Date.now();
         let resourceHistory = [];
-
-        // Socket connection
-        // Update the socket connection:
-        // Update Socket.IO handling part:
-
-// Socket connection with better error handling
-        const socket = io.connect('http://localhost:5050', {
-            reconnection: true,
-            reconnectionAttempts: 10,
-            reconnectionDelay: 1000,
-            reconnectionDelayMax: 5000,
-            timeout: 20000,
-            transports: ['polling', 'websocket']
-        });
+        
+        // Log to help with debugging
+        console.log("Dashboard script starting up...");
+        
+        // Change the Socket.IO connection to use the relative path
+        // This uses the current host and port automatically
+        const socket = io("http://192.168.29.117:5051");
 
         // Socket.IO Event Handlers
         socket.on('connect', () => {
@@ -296,19 +288,91 @@
             lastUpdate = Date.now();
             
             try {
-                // Update dashboard components
-                updateWorkerStats(data);
-                updateResourceStats(data);
-                updateTaskProgress(data);
+                // Use basic, direct DOM updates to ensure they work
+                // Worker count
+                const workerCount = Object.keys(data.workers || {}).length;
+                document.getElementById('activeNodes').innerText = workerCount;
+                document.getElementById('workerCount').innerText = workerCount;
+                
+                // CPU & Memory
+                const avgCpu = parseFloat(data.avg_cpu) || 0;
+                const avgMemory = parseFloat(data.avg_memory) || 0;
+                document.getElementById('aggregateCPU').innerText = `${avgCpu.toFixed(1)}%`;
+                document.getElementById('cpuProgressBar').style.width = `${avgCpu}%`;
+                
+                document.getElementById('aggregateMemory').innerText = `${avgMemory.toFixed(1)}%`;
+                document.getElementById('memoryProgressBar').style.width = `${avgMemory}%`;
+                
+                // Task progress
+                const completedTasks = parseInt(data.completed_tasks) || 0;
+                const totalTasks = parseInt(data.total_tasks) || 1; // Avoid divide by zero
+                const progress = totalTasks > 0 ? (completedTasks / totalTasks) * 100 : 0;
+                
+                document.getElementById('tasksProgress').innerText = `${progress.toFixed(1)}%`;
+                document.getElementById('taskProgressBar').style.width = `${progress}%`;
+                document.getElementById('tasksRatio').innerText = `${completedTasks}/${totalTasks} tasks`;
+                
+                // Then call the more complex update functions
+                updateWorkerCards(data.workers || {});
                 updateResourceChart(data);
-                updatePerformanceComparison(data);
+                updatePerformanceComparison(data.performance_comparison);
             } catch (error) {
                 console.error('Error processing update_stats:', error);
             }
         });
 
+        // Add this simple function to handle worker cards
+        function updateWorkerCards(workers) {
+            const container = document.getElementById('workerNodesContainer');
+            if (!container) return;
+            
+            const workerCount = Object.keys(workers).length;
+            
+            // Clear container if we have workers
+            if (workerCount > 0) {
+                container.innerHTML = '';
+                
+                // Add worker cards for each worker
+                Object.entries(workers).forEach(([workerId, stats]) => {
+                    const cpuPercentage = parseFloat(stats.cpu) || 0;
+                    const memoryPercentage = parseFloat(stats.memory) || 0;
+                    const tasksProcessed = parseInt(stats.tasks_processed) || 0;
+                    const processingRate = stats.processing_rate ? parseFloat(stats.processing_rate).toFixed(2) : "0.00";
+                    
+                    // Create simple worker card
+                    const workerCard = document.createElement('div');
+                    workerCard.className = 'card worker-card';
+                    workerCard.innerHTML = `
+                        <div class="card-header">
+                            <span><i class="fas fa-laptop-code me-2"></i> ${workerId}</span>
+                            <span class="badge bg-success float-end">Active</span>
+                        </div>
+                        <div class="card-body">
+                            <p>CPU: ${cpuPercentage.toFixed(1)}%</p>
+                            <div class="progress mb-3">
+                                <div class="progress-bar bg-primary" style="width: ${cpuPercentage}%"></div>
+                            </div>
+                            <p>Memory: ${memoryPercentage.toFixed(1)}%</p>
+                            <div class="progress mb-3">
+                                <div class="progress-bar bg-success" style="width: ${memoryPercentage}%"></div>
+                            </div>
+                            <p>Tasks: ${tasksProcessed} (${processingRate} tasks/sec)</p>
+                        </div>
+                    `;
+                    container.appendChild(workerCard);
+                });
+            } else {
+                container.innerHTML = `
+                    <div class="text-center py-4 text-muted">
+                        <i class="fas fa-spinner fa-spin me-2"></i> Waiting for workers to connect...
+                    </div>
+                `;
+            }
+        }
+
         // DOM Ready
         document.addEventListener('DOMContentLoaded', function() {
+            console.log('DOM fully loaded');
             // Initialize Bootstrap toast
             connectionToast = new bootstrap.Toast(document.getElementById('connectionStatus'));
             
@@ -334,6 +398,7 @@
 
         // Initialize Charts
         function initializeCharts() {
+            console.log('Initializing charts');
             // Resource utilization chart
             const resourceCtx = document.getElementById('resourceChart').getContext('2d');
             charts.resourceChart = new Chart(resourceCtx, {
@@ -475,33 +540,6 @@
             });
         }
 
-        // Socket.IO Event Handlers
-        socket.on('connect', () => {
-            console.log('WebSocket connected!');
-            document.getElementById('liveIndicator').className = 'badge bg-success me-2';
-            document.getElementById('liveIndicator').innerHTML = '<i class="fas fa-signal me-1"></i> LIVE';
-        });
-        
-        socket.on('disconnect', () => {
-            console.log('WebSocket disconnected!');
-            document.getElementById('liveIndicator').className = 'badge bg-danger me-2';
-            document.getElementById('liveIndicator').innerHTML = '<i class="fas fa-circle-notch fa-spin me-1"></i> OFFLINE';
-            document.querySelector('.toast-body').innerHTML = '<i class="fas fa-exclamation-triangle me-2"></i> Connection lost. Reconnecting...';
-            connectionToast.show();
-        });
-
-        socket.on('update_stats', (data) => {
-            console.log('Received update_stats:', data);
-            lastUpdate = Date.now();
-            
-            // Update dashboard components
-            updateWorkerStats(data);
-            updateResourceStats(data);
-            updateTaskProgress(data);
-            updateResourceChart(data);
-            updatePerformanceComparison(data);
-        });
-
         // Update Worker Statistics
         function updateWorkerStats(data) {
             const workers = data.workers || {};
@@ -599,45 +637,54 @@
             document.getElementById('tasksRatio').innerText = `${completedTasks}/${totalTasks} tasks`;
         }
 
-        // Update Resource Chart
+        // Simplify the resource chart update
         function updateResourceChart(data) {
-            const now = new Date().toLocaleTimeString();
-            
-            // Store resource history (limited to last 10 data points)
-            resourceHistory.push({
-                timestamp: now,
-                cpu: data.avg_cpu || 0,
-                memory: data.avg_memory || 0
-            });
-            
-            // Keep only the last 10 data points
-            if (resourceHistory.length > 10) {
-                resourceHistory.shift();
+            try {
+                if (!charts.resourceChart) return;
+                
+                const now = new Date().toLocaleTimeString();
+                const cpuValue = parseFloat(data.avg_cpu) || 0;
+                const memValue = parseFloat(data.avg_memory) || 0;
+                
+                // Store resource history (limited to last 10 data points)
+                resourceHistory.push({
+                    timestamp: now,
+                    cpu: cpuValue,
+                    memory: memValue
+                });
+                
+                // Keep only the last 10 data points
+                if (resourceHistory.length > 10) {
+                    resourceHistory.shift();
+                }
+                
+                // Update chart with resource history
+                charts.resourceChart.data.labels = resourceHistory.map(point => point.timestamp);
+                charts.resourceChart.data.datasets[0].data = resourceHistory.map(point => point.cpu);
+                charts.resourceChart.data.datasets[1].data = resourceHistory.map(point => point.memory);
+                charts.resourceChart.update();
+            } catch (error) {
+                console.error('Error updating resource chart:', error);
             }
-            
-            // Update chart with resource history
-            charts.resourceChart.data.labels = resourceHistory.map(point => point.timestamp);
-            charts.resourceChart.data.datasets[0].data = resourceHistory.map(point => point.cpu);
-            charts.resourceChart.data.datasets[1].data = resourceHistory.map(point => point.memory);
-            charts.resourceChart.update();
         }
 
         // Update Performance Comparison
-        function updatePerformanceComparison(data) {
-            const comparison = data.performance_comparison;
-            
-            if (comparison) {
+        function updatePerformanceComparison(comparison) {
+            try {
+                if (!comparison) return;
+                if (!charts.timeComparisonChart) return;
+                
                 // Update single worker performance
-                if (comparison.single_worker && comparison.single_worker.processing_time) {
-                    performanceData.single.time = comparison.single_worker.processing_time;
-                    performanceData.single.tasks = comparison.single_worker.tasks_completed;
+                if (comparison.single_worker && comparison.single_worker.processing_time !== null) {
+                    performanceData.single.time = parseFloat(comparison.single_worker.processing_time) || 0;
+                    performanceData.single.tasks = parseInt(comparison.single_worker.tasks_completed) || 0;
                 }
                 
                 // Update multiple worker performance
-                if (comparison.multi_worker && comparison.multi_worker.processing_time) {
-                    performanceData.multi.time = comparison.multi_worker.processing_time;
-                    performanceData.multi.tasks = comparison.multi_worker.tasks_completed;
-                    performanceData.multi.workers = comparison.multi_worker.worker_count;
+                if (comparison.multi_worker && comparison.multi_worker.processing_time !== null) {
+                    performanceData.multi.time = parseFloat(comparison.multi_worker.processing_time) || 0;
+                    performanceData.multi.tasks = parseInt(comparison.multi_worker.tasks_completed) || 0;
+                    performanceData.multi.workers = parseInt(comparison.multi_worker.worker_count) || 0;
                 }
                 
                 // Update comparison chart
@@ -648,17 +695,22 @@
                 charts.timeComparisonChart.update();
                 
                 // Calculate and display speedup if available
-                if (performanceData.single.time > 0 && performanceData.multi.time > 0) {
+                const speedupElement = document.getElementById('speedupMetric');
+                if (!speedupElement) return;
+                
+                if (performanceData.single.time > 0 && performanceData.multi.time > 0 && performanceData.multi.workers > 0) {
                     const speedup = (performanceData.single.time / performanceData.multi.time).toFixed(2);
                     const efficiency = ((speedup / performanceData.multi.workers) * 100).toFixed(1);
                     
-                    document.getElementById('speedupMetric').innerHTML = `
+                    speedupElement.innerHTML = `
                         <div class="alert alert-info">
                             <strong>${performanceData.multi.workers}x workers</strong> achieved a 
                             <strong>${speedup}x speedup</strong> (${efficiency}% efficiency)
                         </div>
                     `;
                 }
+            } catch (error) {
+                console.error('Error updating performance comparison:', error);
             }
         }
 

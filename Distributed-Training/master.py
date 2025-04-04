@@ -9,26 +9,52 @@ from sklearn.model_selection import train_test_split
 from ai_module import train_model, predict  # ✅ Use single AI module
 import sys
 
+# Add Flask and SocketIO imports for dashboard
+from flask import Flask, render_template, request, jsonify
+from flask_socketio import SocketIO
+import logging
+import signal
 
-# Import dashboard functions - moved outside of the class
+# Configure logging
+logging.basicConfig(level=logging.INFO, 
+                    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger("master")
+
+# Load configuration
 try:
-    from dashboard import update_stats
-    has_dashboard = True
-    print("✅ Successfully imported dashboard module")
-except ImportError as e:
-    print(f"⚠️ Error importing dashboard module: {e}")
-    has_dashboard = False
-    
-    # Define fallback function if dashboard module is not available
-    def update_stats(data):
-        print(f"📊 Stats update (dashboard not available): {data}")
+    with open('config.json', 'r') as config_file:
+        config = json.load(config_file)
+    print("✅ Loaded configuration from config.json")
+except Exception as e:
+    print(f"⚠️ Error loading config.json: {e}")
+    # Default configuration
+    config = {
+        "master": {
+            "ip": "localhost",
+            "task_port": "5555",
+            "result_port": "5556",
+            "heartbeat_port": "5557"
+        },
+        "dashboard": {
+            "host": "localhost",
+            "port": "5051"
+        }
+    }
+
+# Get ports from config
+TASK_PORT = config["master"]["task_port"]
+RESULT_PORT = config["master"]["result_port"]
+HEARTBEAT_PORT = config["master"]["heartbeat_port"]
+DASHBOARD_HOST = config["dashboard"]["host"]
+DASHBOARD_PORT = config["dashboard"]["port"]
 
 # Global Configuration
-TASK_PORT = "5555"
-RESULT_PORT = "5556"
-HEARTBEAT_PORT = "5557"
-
 context = zmq.Context()
+
+# Initialize Flask app for dashboard
+app = Flask(__name__)
+app.config['SECRET_KEY'] = 'distributed-training-secret'
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
 
 class MasterNode:
     def __init__(self, mode="train"):
@@ -41,7 +67,8 @@ class MasterNode:
         self.running = True  # Flag for graceful shutdown
         self.worker_stats = {}  # Store worker resource stats
         self.start_time = time.time()  # Record start time for performance metrics
-
+        self.completion_time = None  # Store completion time when all tasks are done
+        
         # ✅ Load dataset based on mode
         if self.mode == "train":
             self.load_train_data()
@@ -65,7 +92,6 @@ class MasterNode:
 
     def load_train_data(self):
         """Loads preprocessed Titanic dataset for training."""
-        # df = pd.read_csv("processed_train.csv")
         df = pd.read_csv(os.path.join("Data", "processed_train.csv"))
         
         # Extract PassengerId before dropping it
@@ -110,7 +136,30 @@ class MasterNode:
         self.total_tasks = len(self.unfinished_tasks)
         print(f"✅ Loaded {self.total_tasks} test samples.")
 
-    
+    def estimate_completion_time(self, elapsed_time):
+        """Estimate total completion time based on progress so far."""
+        if self.completed_tasks == 0 or self.total_tasks == 0:
+            return {
+                "elapsed": elapsed_time,
+                "estimated_total": 0,
+                "remaining": 0
+            }
+        
+        progress = self.completed_tasks / self.total_tasks
+        if progress > 0:
+            total_estimated_time = elapsed_time / progress
+            remaining_time = total_estimated_time - elapsed_time
+            return {
+                "elapsed": elapsed_time,
+                "estimated_total": total_estimated_time,
+                "remaining": max(0, remaining_time)  # Ensure it's not negative
+            }
+        return {
+            "elapsed": elapsed_time,
+            "estimated_total": 0,
+            "remaining": 0
+        }
+
     def handle_workers(self):
         """Handle heartbeat monitoring from workers."""
         last_update_time = 0  # Track the last time we sent an update
@@ -131,7 +180,8 @@ class MasterNode:
                     "tasks_processed": worker_info.get("tasks_processed", 0),
                     "last_seen": worker_info.get("last_seen", time.time()),
                     "current_task": worker_info.get("current_task", None),
-                    "processing_rate": worker_info.get("processing_rate", 0)
+                    "processing_rate": worker_info.get("processing_rate", 0),
+                    "uptime": worker_info.get("uptime", 0)
                 }
                 
                 current_time = time.time()
@@ -139,71 +189,66 @@ class MasterNode:
                 # Only send updates every 0.5 seconds to avoid flooding
                 if current_time - last_update_time >= 0.5:
                     # Calculate worker performance metrics
-                    workers_count = len(self.workers)
+                    workers_count = len(self.worker_stats)  # Count by unique worker IDs
                     if workers_count > 0:
-                        total_cpu = sum(w.get("cpu", 0) for w in self.workers.values())
-                        total_memory = sum(w.get("memory", 0) for w in self.workers.values())
-                        total_tasks_processed = sum(w.get("tasks_processed", 0) for w in self.workers.values())
+                        total_cpu = sum(w.get("cpu", 0) for w in self.worker_stats.values())
+                        total_memory = sum(w.get("memory", 0) for w in self.worker_stats.values())
                         
-                        # Update dashboard with stats
-                        print(f"📊 Sending stats to dashboard: {workers_count} workers, {self.completed_tasks}/{self.total_tasks} tasks")
+                        # Calculate elapsed time since start
+                        elapsed_time = time.time() - self.start_time
                         
-                        update_stats({
-                            "workers": self.worker_stats,
-                            "completed_tasks": self.completed_tasks,
-                            "total_tasks": self.total_tasks,
-                            "workers_count": workers_count,
-                            "avg_cpu": total_cpu / max(1, workers_count),
-                            "avg_memory": total_memory / max(1, workers_count),
-                            "total_tasks_processed": total_tasks_processed,
-                            "elapsed_time": time.time() - self.start_time
-                        })
+                        # Update dashboard with stats via SocketIO
+                        try:
+                            stats_data = {
+                                "workers": self.worker_stats,
+                                "completed_tasks": self.completed_tasks,
+                                "total_tasks": self.total_tasks,
+                                "avg_cpu": total_cpu / max(1, workers_count),
+                                "avg_memory": total_memory / max(1, workers_count),
+                                "workers_count": workers_count,
+                                "elapsed_time": elapsed_time
+                            }
+                            
+                            # Add either estimated completion time or actual completion time
+                            if self.completion_time:
+                                stats_data["completion_time"] = self.completion_time
+                            else:
+                                stats_data["estimated_completion_time"] = self.estimate_completion_time(elapsed_time)
+                            
+                            print(f"📊 Sending update to dashboard: {workers_count} workers, {self.completed_tasks}/{self.total_tasks} tasks")
+                            socketio.emit('update_stats', stats_data)
+                            
+                            # Save stats to file for persistence
+                            try:
+                                with open("last_stats.json", "w") as f:
+                                    json.dump(stats_data, f)
+                            except Exception as e:
+                                print(f"⚠️ Error saving stats: {e}")
+                                
+                        except Exception as e:
+                            print(f"⚠️ Error sending stats to dashboard: {e}")
                         
                         last_update_time = current_time
-                
+                    
             except zmq.Again:
                 pass  # No data available at the moment
             except Exception as e:
                 print(f"⚠️ Error in handle_workers: {e}")
-                import traceback
-                traceback.print_exc()
-                
+            
             # Remove inactive workers
             current_time = time.time()
-            inactive_workers = [worker for worker, info in self.workers.items() 
-                            if current_time - info.get("last_seen", current_time) > 10]
+            inactive_workers = [worker for worker, info in list(self.worker_stats.items())
+                               if current_time - info.get("last_seen", current_time) > 10]
 
             for worker_id in inactive_workers:
                 print(f"➖ Worker disconnected: {worker_id}")
-                del self.workers[worker_id]
+                if worker_id in self.workers:
+                    del self.workers[worker_id]
                 if worker_id in self.worker_stats:
                     del self.worker_stats[worker_id]
-            
-            # Even if no heartbeats received, periodically update dashboard
-            current_time = time.time()
-            if current_time - last_update_time >= 2.0:  # Send update every 2 seconds regardless
-                workers_count = len(self.workers)
-                if workers_count > 0:
-                    total_cpu = sum(w.get("cpu", 0) for w in self.workers.values())
-                    total_memory = sum(w.get("memory", 0) for w in self.workers.values())
-                    total_tasks_processed = sum(w.get("tasks_processed", 0) for w in self.workers.values())
                     
-                    update_stats({
-                        "workers": self.worker_stats,
-                        "completed_tasks": self.completed_tasks,
-                        "total_tasks": self.total_tasks,
-                        "workers_count": workers_count,
-                        "avg_cpu": total_cpu / max(1, workers_count),
-                        "avg_memory": total_memory / max(1, workers_count),
-                        "total_tasks_processed": total_tasks_processed,
-                        "elapsed_time": time.time() - self.start_time
-                    })
-                    
-                    last_update_time = current_time
-                    
-            time.sleep(0.1)  # Avoid excessive CPU usage
-        
-        
+            time.sleep(0.1)  # Small sleep to avoid excessive CPU usage
+
     def distribute_tasks(self):
         """Assign tasks (train or test) to available workers."""
         while self.unfinished_tasks and self.running:
@@ -218,46 +263,10 @@ class MasterNode:
             except zmq.Again:
                 time.sleep(0)
 
-    # def collect_results(self):
-    #     """Wait for all workers to send back results."""
-    #     received_task_ids = set()
-
-    #     while len(received_task_ids) < self.total_tasks and self.running:
-    #         try:
-    #             result = self.result_socket.recv_json(flags=zmq.NOBLOCK)
-    #             print(f"📥 Master Received: {result}")
-
-    #             received_task_ids.add(result["task_id"])
-    #             self.completed_tasks += 1
-    #             progress = (self.completed_tasks / self.total_tasks) * 100
-    #             print(f"📊 Progress: {self.completed_tasks}/{self.total_tasks} tasks completed ({progress:.1f}%)")
-                
-    #             self.save_results(result)
-
-    #         except zmq.Again:
-    #             time.sleep(0)
-                
-    #             # Print status update every 5 seconds
-    #             if self.completed_tasks > 0 and self.completed_tasks % 10 == 0:
-    #                 progress = (self.completed_tasks / self.total_tasks) * 100
-    #                 print(f"📊 Progress update: {self.completed_tasks}/{self.total_tasks} tasks completed ({progress:.1f}%)")
-
-    #     if not self.running:
-    #         print("⚠️ Processing interrupted by user.")
-    #     else:
-    #         print(f"🎉 All {self.total_tasks} tasks completed successfully!")
-
-    #         # ✅ If any task IDs were never received, save them as `-1`
-    #         missing_task_ids = set(range(self.total_tasks)) - received_task_ids
-    #         for task_id in missing_task_ids:
-    #             print(f"⚠️ No result received for Task ID {task_id}, marking as -1.")
-    #             self.save_results({"task_id": task_id, "passenger_id": task_id + 1, "prediction": None})
-
-    # Update the collect_results function in master.py to include the following changes:
-
     def collect_results(self):
         """Wait for all workers to send back results."""
         received_task_ids = set()
+        start_time = time.time()
 
         while len(received_task_ids) < self.total_tasks and self.running:
             try:
@@ -267,64 +276,40 @@ class MasterNode:
                 received_task_ids.add(result["task_id"])
                 self.completed_tasks += 1
                 progress = (self.completed_tasks / self.total_tasks) * 100
+                
+                # Calculate elapsed time
+                elapsed_time = time.time() - start_time
+                
+                # Check if we've completed all tasks
+                if self.completed_tasks == self.total_tasks:
+                    self.completion_time = elapsed_time
+                    print(f"✅ All tasks completed in {self.completion_time:.2f} seconds")
+                
                 print(f"📊 Progress: {self.completed_tasks}/{self.total_tasks} tasks completed ({progress:.1f}%)")
                 
-                # Update dashboard with latest task completion info
-                workers_count = len(self.workers)
-                if workers_count > 0:
-                    total_cpu = sum(w.get("cpu", 0) for w in self.workers.values())
-                    total_memory = sum(w.get("memory", 0) for w in self.workers.values())
-                    total_tasks_processed = sum(w.get("tasks_processed", 0) for w in self.workers.values())
-                else:
-                    total_cpu = total_memory = total_tasks_processed = 0
-                    
-                update_stats({
-                    "workers": self.worker_stats,
-                    "completed_tasks": self.completed_tasks,
-                    "total_tasks": self.total_tasks,
-                    "workers_count": workers_count,
-                    "avg_cpu": total_cpu / max(1, workers_count),
-                    "avg_memory": total_memory / max(1, workers_count),
-                    "total_tasks_processed": total_tasks_processed,
-                    "elapsed_time": time.time() - self.start_time if hasattr(self, 'start_time') else 0
-                })
-                
                 self.save_results(result)
-
             except zmq.Again:
                 time.sleep(0)
+                
+                # Periodically update stats with elapsed time every second
+                if hasattr(self, 'last_stats_update'):
+                    if time.time() - self.last_stats_update >= 1.0:
+                        elapsed_time = time.time() - start_time
+                        self.last_stats_update = time.time()
+                else:
+                    self.last_stats_update = time.time()
 
         if not self.running:
             print("⚠️ Processing interrupted by user.")
         else:
-            print(f"🎉 All {self.total_tasks} tasks completed successfully!")
+            final_time = self.completion_time or (time.time() - start_time)
+            print(f"🎉 All {self.total_tasks} tasks completed successfully in {final_time:.2f} seconds!")
             
-            # Final update to dashboard
-            workers_count = len(self.workers)
-            if workers_count > 0:
-                total_cpu = sum(w.get("cpu", 0) for w in self.workers.values())
-                total_memory = sum(w.get("memory", 0) for w in self.workers.values())
-                total_tasks_processed = sum(w.get("tasks_processed", 0) for w in self.workers.values())
-            else:
-                total_cpu = total_memory = total_tasks_processed = 0
-                
-            update_stats({
-                "workers": self.worker_stats,
-                "completed_tasks": self.total_tasks,
-                "total_tasks": self.total_tasks,
-                "workers_count": workers_count,
-                "avg_cpu": total_cpu / max(1, workers_count),
-                "avg_memory": total_memory / max(1, workers_count),
-                "total_tasks_processed": total_tasks_processed,
-                "elapsed_time": time.time() - self.start_time if hasattr(self, 'start_time') else 0
-            })
+            # Save the completion time to a file for reference
+            with open("completion_time.txt", "a") as f:
+                worker_count = len(self.worker_stats)
+                f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')}: {worker_count} workers - {self.total_tasks} tasks - {final_time:.2f} seconds\n")
 
-            # Process any missing tasks
-            missing_task_ids = set(range(self.total_tasks)) - received_task_ids
-            for task_id in missing_task_ids:
-                print(f"⚠️ No result received for Task ID {task_id}, marking as -1.")
-                self.save_results({"task_id": task_id, "passenger_id": task_id + 1, "prediction": None})
-                    
     def save_results(self, result):
         """Save predictions into submission file based on mode."""
         prediction = result['prediction'][0] if result['prediction'] and isinstance(result['prediction'], list) else -1
@@ -348,9 +333,21 @@ class MasterNode:
         self.cleanup()
 
     def run(self):
+        # Start dashboard thread first
+        dashboard_thread = threading.Thread(target=run_dashboard)
+        dashboard_thread.daemon = True  # Make sure it closes when main thread exits
+        dashboard_thread.start()
+        
+        # Start worker handler
         threading.Thread(target=self.handle_workers, daemon=True).start()
         threading.Thread(target=self.monitor_keyboard, daemon=True).start()
         
+        print("💡 Dashboard is now running internally")
+        print(f"📊 Dashboard available at http://{DASHBOARD_HOST}:{DASHBOARD_PORT}")
+        
+        # Give a moment for everything to initialize
+        time.sleep(1)
+
         distribution_thread = threading.Thread(target=self.distribute_tasks)
         distribution_thread.start()
         
@@ -378,9 +375,58 @@ class MasterNode:
         print("✅ Master shutdown complete.")
         os._exit(0)  # ✅ Ensure proper exit
 
+# Flask routes for dashboard
+@app.route('/')
+def index():
+    """Serve the dashboard HTML page."""
+    print("📊 Serving dashboard page")
+    return render_template('dashboard.html')
 
+@socketio.on('connect')
+def handle_connect():
+    """Handle client connection."""
+    print(f"🔌 Client connected to dashboard: {request.sid}")
+    
+    # Send current stats to newly connected client
+    try:
+        if os.path.exists("last_stats.json"):
+            with open("last_stats.json", "r") as f:
+                stats = json.load(f)
+                socketio.emit('update_stats', stats, room=request.sid)
+    except Exception as e:
+        print(f"⚠️ Error loading last stats: {e}")
+
+@socketio.on('disconnect')
+def handle_disconnect():
+    """Handle client disconnection."""
+    print(f"🔌 Client disconnected from dashboard: {request.sid}")
+
+def run_dashboard():
+    """Run the Flask dashboard."""
+    try:
+        print(f"🌐 Starting dashboard at http://{DASHBOARD_HOST}:{DASHBOARD_PORT}")
+        socketio.run(app, host=DASHBOARD_HOST, port=int(DASHBOARD_PORT), 
+                     debug=False, allow_unsafe_werkzeug=True)
+    except Exception as e:
+        print(f"⚠️ Error in dashboard: {e}")
+        import traceback
+        traceback.print_exc()
 
 if __name__ == "__main__":
+    print("🔍 Checking for templates directory...")
+    templates_dir = os.path.join(os.path.dirname(__file__), "templates")
+    if not os.path.exists(templates_dir):
+        print(f"⚠️ Templates directory not found at {templates_dir}! Creating it...")
+        try:
+            os.makedirs(templates_dir, exist_ok=True)
+        except Exception as e:
+            print(f"⚠️ Error creating templates directory: {e}")
+    
+    dashboard_file = os.path.join(templates_dir, "dashboard.html")
+    if not os.path.exists(dashboard_file):
+        print(f"⚠️ Dashboard HTML file not found at {dashboard_file}!")
+        print("💡 Make sure you've created the dashboard.html file in the templates directory.")
+    
     print("🚀 Starting Master Node")
     print("💡 Select mode:")
     print("   1) Train (default)")
