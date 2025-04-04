@@ -1,2 +1,10 @@
 2025-04-05 03:50:55: 3 workers - 891 tasks - 52.67 seconds
 2025-04-05 03:51:25: 3 workers - 418 tasks - 7.69 seconds
+2025-04-05 04:13:49: 2 workers - 891 tasks - 28.57 seconds
+2025-04-05 04:18:07: 1 workers - 891 tasks - 23.96 seconds
+2025-04-05 04:24:05: 2 workers - 891 tasks - 34.04 seconds
+2025-04-05 04:30:07: 2 workers - 891 tasks - 38.51 seconds
+2025-04-05 04:43:30: 0 workers - 891 tasks - 26.29 seconds
+2025-04-05 04:50:27: 0 workers - 891 tasks - 24.96 seconds
+2025-04-05 04:51:12: 2 workers - 418 tasks - 17.25 seconds
+2025-04-05 04:52:36: 3 workers - 891 tasks - 19.98 seconds
