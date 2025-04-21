@@ -8,13 +8,13 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
 from ai_module import train_model, predict  # ✅ Use single AI module
 import sys
+import queue
 
 # Add Flask and SocketIO imports for dashboard
 from flask import Flask, render_template, request, jsonify
 from flask_socketio import SocketIO
 import logging
 import signal
-import queue
 import datetime
 import socket
 from collections import defaultdict
@@ -87,6 +87,19 @@ class MasterNode:
         self.start_time = time.time()  # Record start time for performance metrics
         self.completion_time = None  # Store completion time when all tasks are done
         
+        # Initialize task queue, worker tracking for batch processing
+        self.task_queue = queue.Queue()
+        self.worker_batches = {}
+        self.worker_efficiency = {}
+        self.execution_summary = {
+            "start_time": self.start_time,
+            "end_time": None,
+            "total_tasks": 0,
+            "worker_stats": {},
+            "distribution_imbalance": 0,
+            "avg_time_per_task": 0
+        }
+        
         # ✅ Load dataset based on mode
         if self.mode == "train":
             self.load_train_data()
@@ -128,6 +141,10 @@ class MasterNode:
             {"task_id": i, "passenger_id": self.passenger_ids[i], "data": X.iloc[i].tolist(), "label": int(y.iloc[i])}
             for i in range(len(y))
         ]
+        
+        # Load tasks into queue for batch processing
+        for task in self.unfinished_tasks:
+            self.task_queue.put(task)
 
         self.total_tasks = len(self.unfinished_tasks)
         print(f"✅ Loaded {self.total_tasks} training samples.")
@@ -150,6 +167,10 @@ class MasterNode:
             {"task_id": i, "passenger_id": self.passenger_ids[i], "data": X_test.iloc[i].tolist()}
             for i in range(len(X_test))
         ]
+        
+        # Load tasks into queue for batch processing
+        for task in self.unfinished_tasks:
+            self.task_queue.put(task)
 
         self.total_tasks = len(self.unfinished_tasks)
         print(f"✅ Loaded {self.total_tasks} test samples.")
@@ -360,24 +381,24 @@ class MasterNode:
         threading.Thread(target=self.handle_workers, daemon=True).start()
         threading.Thread(target=self.monitor_keyboard, daemon=True).start()
         
+        # Start the task distribution and result processing threads
+        threading.Thread(target=self.start_task_distribution, daemon=True).start()
+        threading.Thread(target=self.process_results, daemon=True).start()
+        threading.Thread(target=self.process_heartbeats, daemon=True).start()
+        
         print("💡 Dashboard is now running internally")
         print(f"📊 Dashboard available at http://{DASHBOARD_HOST}:{DASHBOARD_PORT}")
         
-        # Give a moment for everything to initialize
-        time.sleep(1)
-
-        distribution_thread = threading.Thread(target=self.distribute_tasks)
-        distribution_thread.start()
-        
+        # Keep the main thread alive
         try:
-            self.collect_results()
+            while self.running:
+                time.sleep(1)
         except KeyboardInterrupt:
             print("\n🛑 Interrupted by user. Shutting down...")
             self.running = False
         finally:
-            distribution_thread.join(timeout=1)
             self.cleanup()
-            
+
     def cleanup(self):
         """Gracefully terminate the master node."""
         print("👋 Master node shutting down...")
@@ -442,6 +463,7 @@ class MasterNode:
     def get_worker_batch(self, worker_id):
         """Get a batch of tasks for a worker."""
         if self.task_queue.empty():
+            logger.info(f"Task queue empty, no tasks for worker {worker_id}")
             return []
         
         batch_size = self.calculate_batch_size(worker_id)
@@ -459,6 +481,8 @@ class MasterNode:
         # Record the batch for tracking
         if worker_id not in self.worker_batches:
             self.worker_batches[worker_id] = []
+        
+        # Add task IDs to worker's batch tracking
         self.worker_batches[worker_id].extend([task["task_id"] for task in batch])
         
         logger.info(f"Prepared batch of {len(batch)} tasks for worker {worker_id}")
@@ -468,7 +492,7 @@ class MasterNode:
         """Thread for distributing tasks to workers."""
         logger.info("Starting task distribution thread")
         
-        while True:
+        while self.running:
             try:
                 # Use poll with timeout to avoid blocking indefinitely
                 poller = zmq.Poller()
@@ -511,10 +535,7 @@ class MasterNode:
                         self.completion_time = time.time() - self.start_time
                         self.record_completion()
                         logger.info(f"✅ Job completed in {self.completion_time:.2f} seconds")
-                        self.stats["completion_time"] = self.completion_time
                 
-                # Update stats for current state
-                self.update_stats()
                 time.sleep(0.01)  # Small sleep to reduce CPU usage
                 
             except Exception as e:
@@ -634,7 +655,7 @@ class MasterNode:
         
         # Prepare worker stats for execution summary
         worker_stats = {}
-        for worker_id, worker in self.workers.values():
+        for worker_id, worker in self.workers.items():  # Fixed: .items() instead of .values()
             tasks_processed = worker.get("tasks_processed", 0)
             avg_task_time = worker.get("avg_task_time_ms", 0)
             worker_stats[worker_id] = {
@@ -678,19 +699,36 @@ class MasterNode:
             "avg_time_per_task": avg_time_per_task
         })
         
-        # Update stats
-        self.stats.update({
-            "total_tasks": self.total_tasks,
+        # Update stats for dashboard
+        stats_data = {
+            "workers": self.worker_stats,
             "completed_tasks": self.completed_tasks,
-            "workers": self.workers,
-            "workers_count": workers_count,
+            "total_tasks": self.total_tasks,
             "avg_cpu": avg_cpu,
             "avg_memory": avg_memory,
+            "workers_count": workers_count,
             "elapsed_time": elapsed_time,
-            "estimated_completion_time": estimated_completion,
-            "time_data": {"elapsed": elapsed_time, "timestamp": time.time()},
             "execution_summary": self.execution_summary
-        })
+        }
+        
+        # Add either estimated completion time or actual completion time
+        if self.completion_time:
+            stats_data["completion_time"] = self.completion_time
+        else:
+            stats_data["estimated_completion_time"] = self.estimate_completion_time(elapsed_time)
+            
+        # Send update to dashboard
+        try:
+            socketio.emit('update_stats', stats_data)
+        except Exception as e:
+            logger.error(f"Error sending stats to dashboard: {e}")
+            
+        # Save stats to file for persistence
+        try:
+            with open("last_stats.json", "w") as f:
+                json.dump(stats_data, f)
+        except Exception as e:
+            logger.error(f"Error saving stats: {e}")
 
     def record_completion(self):
         """Record job completion details to a file."""
@@ -797,6 +835,10 @@ def run_dashboard():
         print(f"⚠️ Error in dashboard: {e}")
         import traceback
         traceback.print_exc()
+
+# Define dashboard host and port from config
+DASHBOARD_HOST = config.get("dashboard", {}).get("host", "0.0.0.0")
+DASHBOARD_PORT = config.get("dashboard", {}).get("port", "5051")
 
 if __name__ == "__main__":
     print("🔍 Checking for templates directory...")
