@@ -14,39 +14,57 @@ from flask import Flask, render_template, request, jsonify
 from flask_socketio import SocketIO
 import logging
 import signal
+import queue
+import datetime
+import socket
+from collections import defaultdict
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, 
-                    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-logger = logging.getLogger("master")
+                    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+                    handlers=[
+                        logging.FileHandler("master.log"),
+                        logging.StreamHandler()
+                    ])
+logger = logging.getLogger("MasterNode")
 
 # Load configuration
 try:
     with open('config.json', 'r') as config_file:
         config = json.load(config_file)
-    print("✅ Loaded configuration from config.json")
+    logger.info("✅ Loaded configuration from config.json")
 except Exception as e:
-    print(f"⚠️ Error loading config.json: {e}")
-    # Default configuration
+    logger.warning(f"⚠️ Error loading config.json: {e}")
     config = {
         "master": {
-            "ip": "localhost",
+            "ip": "0.0.0.0",  # Use 0.0.0.0 to bind to all interfaces
             "task_port": "5555",
             "result_port": "5556",
             "heartbeat_port": "5557"
         },
-        "dashboard": {
-            "host": "localhost",
-            "port": "5051"
+        "batch_size": {
+            "initial": 10,
+            "min": 5,
+            "max": 50
+        },
+        "load_balancing": {
+            "enabled": True,
+            "fairness_weight": 0.7  # 0.0 = pure efficiency, 1.0 = pure fairness
         }
     }
 
-# Get ports from config
+# Get master configuration
+MASTER_IP = config["master"]["ip"]
 TASK_PORT = config["master"]["task_port"]
 RESULT_PORT = config["master"]["result_port"]
 HEARTBEAT_PORT = config["master"]["heartbeat_port"]
-DASHBOARD_HOST = config["dashboard"]["host"]
-DASHBOARD_PORT = config["dashboard"]["port"]
+
+# Get batch configuration
+INITIAL_BATCH_SIZE = config.get("batch_size", {}).get("initial", 10)
+MIN_BATCH_SIZE = config.get("batch_size", {}).get("min", 5)
+MAX_BATCH_SIZE = config.get("batch_size", {}).get("max", 50)
+LOAD_BALANCING_ENABLED = config.get("load_balancing", {}).get("enabled", True)
+FAIRNESS_WEIGHT = config.get("load_balancing", {}).get("fairness_weight", 0.7)
 
 # Global Configuration
 context = zmq.Context()
@@ -77,15 +95,15 @@ class MasterNode:
 
         # Task Distributor (ROUTER)
         self.task_socket = context.socket(zmq.ROUTER)
-        self.task_socket.bind(f"tcp://*:{TASK_PORT}")
+        self.task_socket.bind(f"tcp://{MASTER_IP}:{TASK_PORT}")
 
         # Result Collector (PULL)
         self.result_socket = context.socket(zmq.PULL)
-        self.result_socket.bind(f"tcp://*:{RESULT_PORT}")
+        self.result_socket.bind(f"tcp://{MASTER_IP}:{RESULT_PORT}")
 
         # Heartbeat Checker (SUB)
         self.heartbeat_socket = context.socket(zmq.SUB)
-        self.heartbeat_socket.bind(f"tcp://*:{HEARTBEAT_PORT}")
+        self.heartbeat_socket.bind(f"tcp://{MASTER_IP}:{HEARTBEAT_PORT}")
         self.heartbeat_socket.setsockopt_string(zmq.SUBSCRIBE, "")
 
         print(f"✅ Master: {self.mode.upper()} Server Started... Waiting for workers.")
@@ -374,6 +392,374 @@ class MasterNode:
 
         print("✅ Master shutdown complete.")
         os._exit(0)  # ✅ Ensure proper exit
+
+    def calculate_batch_size(self, worker_id):
+        """Calculate batch size based on worker efficiency and fairness."""
+        if not LOAD_BALANCING_ENABLED:
+            return INITIAL_BATCH_SIZE
+        
+        # Count active workers (seen in the last 10 seconds)
+        current_time = time.time()
+        active_workers = sum(1 for w in self.workers.values() 
+                           if current_time - w.get("last_seen", 0) < 10)
+        
+        # If this is a new worker or we have very few workers, use initial size
+        if worker_id not in self.worker_efficiency or active_workers <= 1:
+            return INITIAL_BATCH_SIZE
+        
+        # Calculate remaining tasks
+        remaining_tasks = max(0, self.total_tasks - self.completed_tasks)
+        
+        # Calculate base batch size from worker efficiency
+        worker_eff = self.worker_efficiency[worker_id]
+        avg_eff = sum(self.worker_efficiency.values()) / max(1, len(self.worker_efficiency))
+        eff_ratio = worker_eff / max(0.1, avg_eff)  # Avoid division by zero
+        
+        # Adjust for tasks processed so far (fairness)
+        tasks_processed = self.workers.get(worker_id, {}).get("tasks_processed", 0)
+        avg_tasks = self.completed_tasks / max(1, len(self.workers))
+        fairness_ratio = min(1.5, avg_tasks / max(1, tasks_processed))  # Cap at 1.5x
+        
+        # Combine efficiency and fairness based on fairness weight
+        combined_factor = (eff_ratio * (1 - FAIRNESS_WEIGHT)) + (fairness_ratio * FAIRNESS_WEIGHT)
+        
+        # Calculate batch size with constraints
+        batch_size = int(INITIAL_BATCH_SIZE * combined_factor)
+        
+        # Limit by min/max batch size
+        batch_size = max(MIN_BATCH_SIZE, min(batch_size, MAX_BATCH_SIZE))
+        
+        # Limit by remaining tasks and number of active workers
+        if active_workers > 0 and remaining_tasks > 0:
+            max_fair_share = max(MIN_BATCH_SIZE, remaining_tasks // active_workers)
+            batch_size = min(batch_size, max_fair_share)
+        
+        logger.debug(f"Calculated batch size for {worker_id}: {batch_size} " +
+                    f"(eff={eff_ratio:.2f}, fair={fairness_ratio:.2f})")
+        
+        return batch_size
+
+    def get_worker_batch(self, worker_id):
+        """Get a batch of tasks for a worker."""
+        if self.task_queue.empty():
+            return []
+        
+        batch_size = self.calculate_batch_size(worker_id)
+        batch = []
+        
+        for _ in range(batch_size):
+            if self.task_queue.empty():
+                break
+            try:
+                task = self.task_queue.get_nowait()
+                batch.append(task)
+            except queue.Empty:
+                break
+        
+        # Record the batch for tracking
+        if worker_id not in self.worker_batches:
+            self.worker_batches[worker_id] = []
+        self.worker_batches[worker_id].extend([task["task_id"] for task in batch])
+        
+        logger.info(f"Prepared batch of {len(batch)} tasks for worker {worker_id}")
+        return batch
+
+    def start_task_distribution(self):
+        """Thread for distributing tasks to workers."""
+        logger.info("Starting task distribution thread")
+        
+        while True:
+            try:
+                # Use poll with timeout to avoid blocking indefinitely
+                poller = zmq.Poller()
+                poller.register(self.task_socket, zmq.POLLIN)
+                
+                socks = dict(poller.poll(1000))  # 1 second timeout
+                if self.task_socket in socks and socks[self.task_socket] == zmq.POLLIN:
+                    worker_id_bytes, empty, request = self.task_socket.recv_multipart()
+                    worker_id = worker_id_bytes.decode('utf-8')
+                    
+                    logger.info(f"Received task request from worker {worker_id}")
+                    
+                    # Process the request
+                    if request == b"request_task":
+                        # Get a batch of tasks for this worker
+                        batch = self.get_worker_batch(worker_id)
+                        
+                        if batch:
+                            logger.info(f"Sending batch of {len(batch)} tasks to worker {worker_id}")
+                            # Send the batch to the worker
+                            batch_json = json.dumps({"batch": batch}).encode()
+                            self.task_socket.send_multipart([
+                                worker_id_bytes, 
+                                b"", 
+                                batch_json
+                            ])
+                            logger.info(f"Batch sent to {worker_id}, size: {len(batch_json)} bytes")
+                        else:
+                            # No tasks left, send empty response
+                            logger.info(f"No tasks available for worker {worker_id}")
+                            self.task_socket.send_multipart([
+                                worker_id_bytes, 
+                                b"", 
+                                json.dumps({"batch": []}).encode()
+                            ])
+                
+                # Check if job is done
+                if self.total_tasks > 0 and self.completed_tasks >= self.total_tasks:
+                    if not self.completion_time:  # Only record completion time once
+                        self.completion_time = time.time() - self.start_time
+                        self.record_completion()
+                        logger.info(f"✅ Job completed in {self.completion_time:.2f} seconds")
+                        self.stats["completion_time"] = self.completion_time
+                
+                # Update stats for current state
+                self.update_stats()
+                time.sleep(0.01)  # Small sleep to reduce CPU usage
+                
+            except Exception as e:
+                logger.error(f"⚠️ Error in task distribution: {str(e)}", exc_info=True)
+                time.sleep(1)  # Wait before retrying
+
+    def process_results(self):
+        """Thread for processing results from workers."""
+        logger.info("Starting result processing thread")
+        
+        while True:
+            try:
+                # Use poll with timeout to avoid blocking indefinitely
+                poller = zmq.Poller()
+                poller.register(self.result_socket, zmq.POLLIN)
+                
+                socks = dict(poller.poll(1000))  # 1 second timeout
+                if self.result_socket in socks and socks[self.result_socket] == zmq.POLLIN:
+                    # Process the result
+                    result_data = self.result_socket.recv_json()
+                    
+                    # Update task tracking
+                    self.completed_tasks += 1
+                    
+                    # Log the received result
+                    worker_id = result_data.get("worker_id", "unknown")
+                    task_id = result_data.get("task_id", "unknown")
+                    logger.info(f"Received result for task {task_id} from worker {worker_id}")
+                    
+                    # Update worker tracking if worker_id provided
+                    if worker_id and worker_id in self.worker_batches:
+                        # Remove task from worker's batch
+                        if task_id in self.worker_batches[worker_id]:
+                            self.worker_batches[worker_id].remove(task_id)
+                    
+                    # Update worker efficiency if processing_time provided
+                    if worker_id and "processing_time" in result_data:
+                        processing_time = result_data["processing_time"]
+                        if processing_time > 0:
+                            # Use exponential moving average for efficiency
+                            eff = 1.0 / processing_time  # tasks per second
+                            if worker_id not in self.worker_efficiency:
+                                self.worker_efficiency[worker_id] = eff
+                            else:
+                                # 80% old value, 20% new value
+                                self.worker_efficiency[worker_id] = 0.8 * self.worker_efficiency[worker_id] + 0.2 * eff
+                
+                time.sleep(0.01)  # Small sleep to reduce CPU usage
+                
+            except Exception as e:
+                logger.error(f"⚠️ Error processing results: {str(e)}", exc_info=True)
+                time.sleep(1)  # Wait before retrying
+
+    def process_heartbeats(self):
+        """Thread for processing heartbeat messages from workers."""
+        logger.info("Starting heartbeat processing thread")
+        
+        while True:
+            try:
+                # Use poll with timeout to avoid blocking indefinitely
+                poller = zmq.Poller()
+                poller.register(self.heartbeat_socket, zmq.POLLIN)
+                
+                socks = dict(poller.poll(1000))  # 1 second timeout
+                if self.heartbeat_socket in socks and socks[self.heartbeat_socket] == zmq.POLLIN:
+                    # Process the heartbeat
+                    heartbeat_msg = self.heartbeat_socket.recv_string()
+                    heartbeat_data = json.loads(heartbeat_msg)
+                    worker_id = heartbeat_data.get("worker_id")
+                    hostname = heartbeat_data.get("hostname", "unknown")
+                    
+                    if worker_id:
+                        # Check if this is a new worker
+                        if worker_id not in self.workers:
+                            logger.info(f"New worker connected: {worker_id} from {hostname}")
+                        
+                        # Store worker information
+                        self.workers[worker_id] = heartbeat_data
+                
+                time.sleep(0.01)  # Small sleep to reduce CPU usage
+                
+            except Exception as e:
+                logger.error(f"⚠️ Error processing heartbeat: {str(e)}", exc_info=True)
+                time.sleep(1)  # Wait before retrying
+
+    def update_stats(self):
+        """Update statistics for the dashboard."""
+        if not self.start_time:
+            return
+            
+        # Calculate elapsed time
+        elapsed_time = time.time() - self.start_time
+        
+        # Calculate average CPU and memory usage
+        workers_count = len(self.workers)
+        if workers_count > 0:
+            cpu_sum = sum(worker.get("cpu", 0) for worker in self.workers.values())
+            memory_sum = sum(worker.get("memory", 0) for worker in self.workers.values())
+            avg_cpu = cpu_sum / workers_count
+            avg_memory = memory_sum / workers_count
+        else:
+            avg_cpu = 0
+            avg_memory = 0
+        
+        # Calculate estimated completion time
+        estimated_completion = None
+        if self.completed_tasks > 0 and self.total_tasks > self.completed_tasks:
+            # Calculate tasks per second
+            tasks_per_second = self.completed_tasks / elapsed_time
+            if tasks_per_second > 0:
+                remaining_tasks = self.total_tasks - self.completed_tasks
+                estimated_seconds = remaining_tasks / tasks_per_second
+                estimated_completion = {
+                    "remaining": estimated_seconds,
+                    "estimated_total": elapsed_time + estimated_seconds
+                }
+        
+        # Prepare worker stats for execution summary
+        worker_stats = {}
+        for worker_id, worker in self.workers.values():
+            tasks_processed = worker.get("tasks_processed", 0)
+            avg_task_time = worker.get("avg_task_time_ms", 0)
+            worker_stats[worker_id] = {
+                "tasks_processed": tasks_processed,
+                "avg_time": avg_task_time,
+            }
+        
+        # Calculate task distribution imbalance
+        if workers_count > 1:
+            tasks_per_worker = [w.get("tasks_processed", 0) for w in self.workers.values()]
+            if tasks_per_worker:
+                max_tasks = max(tasks_per_worker)
+                min_tasks = min(tasks_per_worker)
+                avg_tasks = sum(tasks_per_worker) / workers_count
+                
+                if avg_tasks > 0:
+                    # Calculate percentage difference between max and avg
+                    imbalance = ((max_tasks - min_tasks) / avg_tasks) * 100
+                else:
+                    imbalance = 0
+            else:
+                imbalance = 0
+        else:
+            imbalance = 0
+        
+        # Calculate average time per task across all workers
+        total_processing_time = 0
+        total_processed = 0
+        for worker in self.workers.values():
+            if "avg_task_time_ms" in worker and "tasks_processed" in worker:
+                total_processing_time += worker["avg_task_time_ms"] * worker["tasks_processed"]
+                total_processed += worker["tasks_processed"]
+        
+        avg_time_per_task = total_processing_time / max(1, total_processed)
+        
+        # Update execution summary
+        self.execution_summary.update({
+            "total_tasks": self.total_tasks,
+            "worker_stats": worker_stats,
+            "distribution_imbalance": imbalance,
+            "avg_time_per_task": avg_time_per_task
+        })
+        
+        # Update stats
+        self.stats.update({
+            "total_tasks": self.total_tasks,
+            "completed_tasks": self.completed_tasks,
+            "workers": self.workers,
+            "workers_count": workers_count,
+            "avg_cpu": avg_cpu,
+            "avg_memory": avg_memory,
+            "elapsed_time": elapsed_time,
+            "estimated_completion_time": estimated_completion,
+            "time_data": {"elapsed": elapsed_time, "timestamp": time.time()},
+            "execution_summary": self.execution_summary
+        })
+
+    def record_completion(self):
+        """Record job completion details to a file."""
+        try:
+            # Count active workers (seen in the last 10 seconds)
+            current_time = time.time()
+            active_workers = sum(1 for w in self.workers.values() 
+                              if current_time - w.get("last_seen", 0) < 10)
+            
+            # Format the completion record
+            timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            record = f"{timestamp}: {active_workers} workers - {self.total_tasks} tasks - {self.completion_time:.2f} seconds\n"
+            
+            # Append to completion_time.txt
+            with open("completion_time.txt", "a") as f:
+                f.write(record)
+                
+            logger.info(f"✅ Recorded completion time: {record.strip()}")
+        except Exception as e:
+            logger.error(f"⚠️ Error recording completion time: {str(e)}")
+
+    def load_tasks(self, tasks):
+        """Load tasks into the queue."""
+        if self.start_time is None:
+            self.start_time = time.time()
+            self.execution_summary["start_time"] = self.start_time
+            
+        # Reset tracking for a new job
+        self.total_tasks = len(tasks)
+        self.completed_tasks = 0
+        self.completion_time = None
+        self.worker_batches = {}
+        
+        # Reset execution summary for new job
+        self.execution_summary.update({
+            "start_time": self.start_time,
+            "end_time": None,
+            "total_tasks": self.total_tasks,
+            "worker_stats": {},
+            "distribution_imbalance": 0
+        })
+        
+        # Add tasks to the queue
+        for task in tasks:
+            self.task_queue.put(task)
+            
+        logger.info(f"✅ Loaded {self.total_tasks} tasks")
+
+    def run(self):
+        """Start all processing threads."""
+        # Start threads for task distribution, result processing, and heartbeat monitoring
+        threads = [
+            threading.Thread(target=self.start_task_distribution, daemon=True),
+            threading.Thread(target=self.process_results, daemon=True),
+            threading.Thread(target=self.process_heartbeats, daemon=True)
+        ]
+        
+        for thread in threads:
+            thread.start()
+            
+        logger.info("✅ Master node running - all threads started")
+        
+        # Keep the main thread alive
+        try:
+            while True:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            logger.info("👋 Shutting down master node")
+            self.context.term()
 
 # Flask routes for dashboard
 @app.route('/')
