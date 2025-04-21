@@ -92,7 +92,7 @@ class MasterNode:
 
     def load_train_data(self):
         """Loads preprocessed Titanic dataset for training."""
-        df = pd.read_csv(os.path.join("Data", "processed_train.csv"))
+        df = pd.read_csv(os.path.join("Data", "augmented_dataset.csv"))
         
         # Extract PassengerId before dropping it
         self.passenger_ids = df["PassengerId"].tolist()

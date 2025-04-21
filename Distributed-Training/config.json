@@ -1,13 +1,21 @@
 {
   "master": {
-    "ip": "192.168.29.117",
+    "ip": "*",
     "task_port": "5555",
     "result_port": "5556",
     "heartbeat_port": "5557"
   },
   "dashboard": {
-    "host": "192.168.29.117",
-    
+    "host": "192.168.29.172",
     "port": "5051"
+  },
+  "batch_size": {
+    "initial": 10,
+    "min": 5,
+    "max": 50
+  },
+  "load_balancing": {
+    "enabled": true,
+    "fairness_weight": 0.7
   }
 }

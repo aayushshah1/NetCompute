@@ -17,7 +17,7 @@ def train_model(task):
     """Trains the model using mini-batch updates and saves after training."""
     global batch_X, batch_y, model
 
-    time.sleep(0.05)  # ⏳ Simulate processing time
+    # time.sleep(0.05)  # ⏳ Simulate processing time
 
     batch_X.append(task["data"])
     batch_y.append(task["label"])
@@ -41,7 +41,7 @@ def predict(task):
     """Predicts using the trained model."""
     global model
 
-    time.sleep(0.05)  # ⏳ Simulate processing time
+    # time.sleep(0.05)  # ⏳ Simulate processing time
 
     if not os.path.exists(MODEL_FILE):
         print(f"⚠️ Model file not found! Skipping prediction for Task ID {task['task_id']}")

@@ -56,6 +56,28 @@
             border: none;
             background-color: #fff;
         }
+        .distribution-chart-container {
+            position: relative;
+            height: 300px;
+            width: 100%;
+            margin: 10px 0;
+        }
+        .execution-stats {
+            font-size: 0.9rem;
+            background-color: #f8f9fa;
+            padding: 10px;
+            border-radius: 5px;
+            margin-bottom: 10px;
+        }
+        .execution-stats code {
+            display: block;
+            white-space: pre-wrap;
+            margin-top: 8px;
+            padding: 8px;
+            background-color: #f1f1f1;
+            border-radius: 4px;
+            font-size: 0.85rem;
+        }
     </style>
 </head>
 <body>
@@ -174,6 +196,31 @@
                     <div class="card-body">
                         <div class="chart-container">
                             <canvas id="timeChart"></canvas>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Task Distribution Analysis -->
+        <div class="row mb-4">
+            <div class="col-12">
+                <div class="card">
+                    <div class="card-header bg-primary text-white">
+                        <h5 class="card-title mb-0">Task Distribution Analysis</h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="distribution-chart-container">
+                            <canvas id="distributionChart"></canvas>
+                        </div>
+                        <div class="execution-stats mt-3">
+                            <h6>Execution Analysis</h6>
+                            <div>Total Tasks: <span id="total-tasks-analysis">0</span></div>
+                            <div>Avg Time Per Task: <span id="avg-time-per-task">0</span> ms</div>
+                            <div>Max Tasks Per Worker: <span id="max-tasks-per-worker">0</span></div>
+                            <div>Min Tasks Per Worker: <span id="min-tasks-per-worker">0</span></div>
+                            <div class="mt-2">Recent Run Summary:</div>
+                            <code id="execution-summary">No execution data available</code>
                         </div>
                     </div>
                 </div>
@@ -345,6 +392,12 @@
             
             // Update workers list
             updateWorkersList(data.workers || {});
+            
+            // Update task distribution chart
+            updateDistributionChart(data.workers || {});
+            
+            // Update execution summary
+            updateExecutionSummary(data);
         });
         
         function updatePerformanceStats(data) {
@@ -430,6 +483,109 @@
             }
         }
         
+        // Initialize distribution chart
+        let distributionChart;
+        
+        function setupDistributionChart() {
+            const ctx = document.getElementById('distributionChart').getContext('2d');
+            distributionChart = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: [],
+                    datasets: [{
+                        label: 'Tasks per Worker',
+                        data: [],
+                        backgroundColor: 'rgba(54, 162, 235, 0.5)',
+                        borderColor: 'rgba(54, 162, 235, 1)',
+                        borderWidth: 1
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            title: {
+                                display: true,
+                                text: 'Number of Tasks'
+                            }
+                        },
+                        x: {
+                            title: {
+                                display: true,
+                                text: 'Worker ID'
+                            }
+                        }
+                    },
+                    plugins: {
+                        legend: {
+                            display: false
+                        },
+                        tooltip: {
+                            callbacks: {
+                                label: function(context) {
+                                    return `${context.parsed.y} tasks`;
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+        }
+        
+        function updateDistributionChart(workers) {
+            if (!distributionChart) {
+                setupDistributionChart();
+            }
+            
+            const labels = [];
+            const data = [];
+            
+            Object.entries(workers).forEach(([workerId, worker]) => {
+                labels.push(workerId);
+                data.push(worker.tasks_processed || 0);
+            });
+            
+            distributionChart.data.labels = labels;
+            distributionChart.data.datasets[0].data = data;
+            distributionChart.update();
+            
+            // Update execution stats
+            if (labels.length > 0) {
+                const tasksProcessed = data.reduce((sum, val) => sum + val, 0);
+                const maxTasks = Math.max(...data);
+                const minTasks = Math.min(...data);
+                
+                document.getElementById('total-tasks-analysis').textContent = tasksProcessed;
+                document.getElementById('max-tasks-per-worker').textContent = maxTasks;
+                document.getElementById('min-tasks-per-worker').textContent = minTasks;
+            }
+        }
+        
+        function updateExecutionSummary(data) {
+            if (data.execution_summary) {
+                const avgTimePerTask = data.execution_summary.avg_time_per_task || 0;
+                document.getElementById('avg-time-per-task').textContent = avgTimePerTask.toFixed(2);
+                
+                // Format the execution summary
+                let summaryText = '';
+                if (data.execution_summary.worker_stats) {
+                    Object.entries(data.execution_summary.worker_stats).forEach(([workerId, stats]) => {
+                        summaryText += `Worker ${workerId}: ${stats.tasks_processed} tasks, avg ${stats.avg_time.toFixed(2)}ms per task\n`;
+                    });
+                }
+                
+                if (data.execution_summary.distribution_imbalance) {
+                    summaryText += `\nDistribution Imbalance: ${data.execution_summary.distribution_imbalance.toFixed(2)}%\n`;
+                }
+                
+                if (summaryText) {
+                    document.getElementById('execution-summary').textContent = summaryText;
+                }
+            }
+        }
+
         // Request initial data when page loads
         socket.on('connect', function() {
             console.log('Connected to server');
@@ -437,9 +593,10 @@
             // We'll just wait for data to come through regular updates
         });
 
-        // Initialize time chart when page loads
+        // Initialize charts when page loads
         document.addEventListener('DOMContentLoaded', function() {
             setupTimeChart();
+            setupDistributionChart();
             
             // Try to load the last stats from sessionStorage if available
             try {
